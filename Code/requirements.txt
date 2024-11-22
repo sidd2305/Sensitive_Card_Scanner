@@ -6,3 +6,4 @@ pillow
 pydantic
 jinja2
 python-multipart
+easyocr
