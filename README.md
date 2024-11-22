@@ -101,7 +101,17 @@ Git Clone Repository
 ```bash
 git clone https://github.com/sidd2305/Sensitive_Card_Scanner
 ```
-
+Create & Activate Virtual Environment
+On Windows
+```bash
+python -m venv venv
+source venv/bin/activate
+```
+On Linux
+```bash
+python -m venv venv
+venv\Scripts\activate 
+```
 Install dependencies:
 ```bash
 pip install -r requirements.txt
