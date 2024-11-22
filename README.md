@@ -107,6 +107,9 @@ On Windows
 python -m venv venv
 source venv/bin/activate
 ```
+
+Modify main.py with the tesseract path on your computer/PC(in main.py)
+
 On Linux
 ```bash
 python -m venv venv
