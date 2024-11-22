@@ -81,6 +81,14 @@ A sophisticated FastAPI-powered application designed to detect and analyze sensi
 - Extension-based fallback
 - Supports multiple MIME types
 
+## Diagrams
+
+### Architecure Diagram
+![Architecture Diagram](Photo_Readme/a.jpg)
+
+### Database Schema
+![Databas Schema](Photo_Readme/b.jpg)
+
 ## 🚀 Installation & Setup
 
 ### Prerequisites
