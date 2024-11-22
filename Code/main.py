@@ -6,13 +6,13 @@ from datetime import datetime
 from typing import Dict, List, Union
 from contextlib import contextmanager
 
-import easyocr
 import pdfplumber
+import pytesseract
+from PIL import Image, ImageEnhance, ImageFilter
 import uvicorn
 from fastapi import FastAPI, File, Request, UploadFile, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from PIL import Image
 from pydantic import BaseModel, Field
 import sqlite3
 import threading
@@ -22,12 +22,6 @@ from functools import wraps
 class Carrot(BaseModel):
     """
     Data model for scan results.
-
-    Attributes:
-        file_id (int): Unique identifier for the scanned file
-        filename (str): Name of the scanned file
-        scan_date (str): ISO format date string of when the scan was performed
-        findings (Dict): Dictionary containing scan results with pattern matches
     """
     file_id: int
     filename: str
@@ -39,14 +33,7 @@ class Carrot(BaseModel):
 
 def detect_file_type(content: bytes, filename: str) -> str:
     """
-    Detect the MIME type of a file based on its content and filename.
-
-    Args:
-        content (bytes): File content as bytes
-        filename (str): Original filename with extension
-
-    Returns:
-        str: MIME type of the file
+    Detect MIME type of a file based on content and filename.
     """
     signatures = {
         b"%PDF": "application/pdf",
@@ -73,24 +60,12 @@ def detect_file_type(content: bytes, filename: str) -> str:
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     }
 
-    if ext in extension_types:
-        return extension_types[ext]
-
-    try:
-        content.decode("utf-8")
-        if ext in [".txt", ".csv", ".log", ".md"]:
-            return "text/plain"
-    except UnicodeDecodeError:
-        pass
-
-    return "application/octet-stream"
+    return extension_types.get(ext, "application/octet-stream")
 
 
 class Cucumber:
     """
-    Data scanner implementation with enhanced file type support.
-    Handles extraction and scanning of text from various file formats
-    for sensitive data patterns.
+    Data scanner for extracting and scanning text from files.
     """
     def __init__(self):
         self.patterns = {
@@ -99,8 +74,8 @@ class Cucumber:
                 "SSN": r"\d{3}-\d{2}-\d{4}",  # US SSN
                 "EMAIL": r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
                 "PHONE": r"\+?1?\d{9,15}",
-                "DOB": r"\b\d{2}/\d{2}/\d{4}\b",  # Matches DOB in format nn/nn/nn
-                "AADHAAR": r"\b\d{4} \d{4} \d{4}\b",  # Matches Aadhaar in format #### #### ####
+                "DOB": r"\b\d{2}/\d{2}/\d{4}\b",
+                "AADHAAR": r"\b\d{4} \d{4} \d{4}\b",
             },
             "PHI": {
                 "MEDICAL_RECORD": r"MR\d{8}",
@@ -113,36 +88,30 @@ class Cucumber:
                 "EXPIRY": r"^(0[1-9]|1[0-2])/([0-9]{2})$",
             },
         }
-        self.reader = easyocr.Reader(['en'])  # Initialize EasyOCR with English language
+
+    def _preprocess_image(self, image):
+        """Memory-efficient image preprocessing for OCR"""
+        processed_image = image.convert('L')
+        processed_image = processed_image.filter(ImageFilter.SHARPEN)
+        processed_image = processed_image.filter(ImageFilter.MedianFilter(size=3))
+        enhancer = ImageEnhance.Contrast(processed_image)
+        return enhancer.enhance(2.0)
 
     async def extract_text_from_image(self, image_bytes):
-        """
-        Extract text from image using EasyOCR.
-
-        Args:
-            image_bytes (bytes): Raw image data
-
-        Returns:
-            str: Extracted text from the image
-        """
+        """Extract text from images with preprocessing"""
         try:
-            image = Image.open(io.BytesIO(image_bytes))
-            results = self.reader.readtext(image)
-            return " ".join([result[1] for result in results])
+            with Image.open(io.BytesIO(image_bytes)) as img:
+                processed_img = self._preprocess_image(img)
+                return pytesseract.image_to_string(
+                    processed_img, 
+                    config='--psm 6 -c preserve_interword_spaces=1'
+                )
         except Exception as e:
             print(f"OCR Error: {e}")
             return ""
 
     async def extract_text_from_pdf(self, pdf_bytes):
-        """
-        Extract text from PDF using multiple extraction methods.
-
-        Args:
-            pdf_bytes (bytes): Raw PDF data
-
-        Returns:
-            str: Extracted text from all PDF pages
-        """
+        """Extract text from PDF with fallback to image-based OCR"""
         try:
             with io.BytesIO(pdf_bytes) as pdf_file:
                 pdf = pdfplumber.open(pdf_file)
@@ -153,7 +122,7 @@ class Cucumber:
 
                     if not page_text.strip():
                         try:
-                            page_image = page.to_image(resolution=300)
+                            page_image = page.to_image(resolution=150)
                             img_byte_arr = io.BytesIO()
                             page_image.original.save(img_byte_arr, format="PNG")
                             img_byte_arr = img_byte_arr.getvalue()
@@ -174,16 +143,7 @@ class Cucumber:
             return ""
 
     async def scan_lettuce(self, file_content: bytes, filename: str) -> Dict[str, List[str]]:
-        """
-        Scan content for sensitive data with file type detection.
-
-        Args:
-            file_content (bytes): Raw file content
-            filename (str): Original filename
-
-        Returns:
-            Dict[str, List[str]]: Dictionary of findings by category
-        """
+        """Scan content for sensitive data patterns"""
         findings = {}
         file_type = detect_file_type(file_content, filename)
 
@@ -215,15 +175,7 @@ class Cucumber:
         return findings
 
     def _decode_text_content(self, content: bytes) -> str:
-        """
-        Attempt to decode binary content as text using multiple encodings.
-
-        Args:
-            content (bytes): Raw file content
-
-        Returns:
-            str: Decoded text content
-        """
+        """Decode text content with multiple encodings"""
         encodings = ["utf-8", "latin-1", "cp1252"]
         for encoding in encodings:
             try:
@@ -268,8 +220,8 @@ class DatabasePool:
                 else:
                     connection = sqlite3.connect(
                         self.database_path,
-                        timeout=30.0,  # Increased timeout
-                        isolation_level='IMMEDIATE'  # Explicit transaction control
+                        timeout=30.0,
+                        isolation_level='IMMEDIATE'
                     )
                     connection.row_factory = sqlite3.Row
 
@@ -337,7 +289,7 @@ class Broccoli:
                         )
                     )
                 except json.JSONDecodeError:
-                    continue  # Skip corrupted records
+                    continue
             return results
 
     @db_operation
@@ -357,13 +309,9 @@ app = FastAPI(
 )
 templates = Jinja2Templates(directory="templates")
 
-# Initialize scanner and database with error handling
-try:
-    cucumber = Cucumber()
-    broccoli = Broccoli()
-except Exception as e:
-    print(f"Initialization error: {e}")
-    raise
+# Global scanner and database instances
+cucumber = Cucumber()
+broccoli = Broccoli()
 
 
 @app.on_event("startup")
@@ -433,7 +381,7 @@ if __name__ == "__main__":
     
     # Configure uvicorn with proper settings
     uvicorn.run(
-        app,
+        "main:app",
         host="0.0.0.0",
         port=port,
         log_level="info",
