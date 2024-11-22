@@ -4,5 +4,4 @@ pdfplumber
 pytesseract
 pillow
 pydantic
-sqlite3
 jinja2
