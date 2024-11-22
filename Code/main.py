@@ -443,8 +443,4 @@ if __name__ == "__main__":
         log_level="info",
         access_log=True,
         workers=1,
-        timeout_keep_alive=30,
-        timeout_notify=30,
-        limit_concurrency=100,
-        backlog=2048
     )
