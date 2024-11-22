@@ -1,0 +1,12 @@
+version: "3.8"
+
+services:
+  fastapi-scanner:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - C:/Users/siddh/Downloads/Aurva/vegetable_garden.db:/app/vegetable_garden.db # Mount database file
+    environment:
+      - DATABASE_URL=sqlite:////app/vegetable_garden.db # Adjust the database path for SQLite
