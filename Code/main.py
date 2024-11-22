@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Dict, List, Union
 from contextlib import contextmanager
 
+import easyocr
 import pdfplumber
-import pytesseract
 import uvicorn
 from fastapi import FastAPI, File, Request, UploadFile, HTTPException
 from fastapi.responses import HTMLResponse
@@ -113,10 +113,11 @@ class Cucumber:
                 "EXPIRY": r"^(0[1-9]|1[0-2])/([0-9]{2})$",
             },
         }
+        self.reader = easyocr.Reader(['en'])  # Initialize EasyOCR with English language
 
     async def extract_text_from_image(self, image_bytes):
         """
-        Extract text from image using Tesseract OCR.
+        Extract text from image using EasyOCR.
 
         Args:
             image_bytes (bytes): Raw image data
@@ -126,8 +127,9 @@ class Cucumber:
         """
         try:
             image = Image.open(io.BytesIO(image_bytes))
-            return pytesseract.image_to_string(image)
-        except (Image.UnidentifiedImageError, pytesseract.TesseractError) as e:
+            results = self.reader.readtext(image)
+            return " ".join([result[1] for result in results])
+        except Exception as e:
             print(f"OCR Error: {e}")
             return ""
 
@@ -156,9 +158,7 @@ class Cucumber:
                             page_image.original.save(img_byte_arr, format="PNG")
                             img_byte_arr = img_byte_arr.getvalue()
 
-                            page_text = pytesseract.image_to_string(
-                                Image.open(io.BytesIO(img_byte_arr))
-                            )
+                            page_text = await self.extract_text_from_image(img_byte_arr)
                         except Exception as ocr_error:
                             print(f"OCR Error: {ocr_error}")
                             page_text = ""
@@ -428,10 +428,6 @@ async def delete_scan(scan_id: int):
 
 
 if __name__ == "__main__":
-    # Configure Tesseract path for Windows
-    if os.name == "nt":
-        pytesseract.pytesseract.tesseract_cmd = r"/usr/bin/tesseract"
-    
     # Get port from environment variable with fallback
     port = int(os.environ.get("PORT", 8000))
     
