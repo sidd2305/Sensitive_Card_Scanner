@@ -89,11 +89,16 @@ A sophisticated FastAPI-powered application designed to detect and analyze sensi
 - System Dependencies
   
 ## 🖥 Running Application
+Git Clone Repository
+```bash
+git clone https://github.com/sidd2305/Sensitive_Card_Scanner
+```
+
 Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
-
+Run main python file
 ```bash
 python main.py
 ```
