@@ -2,39 +2,27 @@ import io
 import json
 import os
 import re
+import traceback
+import sqlite3
 from datetime import datetime
 from typing import Dict, List, Union
-from contextlib import contextmanager
 
 import pdfplumber
 import pytesseract
-from PIL import Image, ImageEnhance, ImageFilter
 import uvicorn
 from fastapi import FastAPI, File, Request, UploadFile, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from PIL import Image, ImageEnhance, ImageFilter
 from pydantic import BaseModel, Field
-import sqlite3
-import threading
-from functools import wraps
-
 
 class Carrot(BaseModel):
-    """
-    Data model for scan results.
-    """
     file_id: int
     filename: str
     scan_date: str
-    findings: Union[Dict[str, List[Dict[str, Union[str, tuple]]]], Dict] = Field(
-        default_factory=dict
-    )
-
+    findings: Union[Dict[str, List[Dict[str, Union[str, tuple]]]], Dict] = Field(default_factory=dict)
 
 def detect_file_type(content: bytes, filename: str) -> str:
-    """
-    Detect MIME type of a file based on content and filename.
-    """
     signatures = {
         b"%PDF": "application/pdf",
         b"\xFF\xD8\xFF": "image/jpeg",
@@ -62,88 +50,52 @@ def detect_file_type(content: bytes, filename: str) -> str:
 
     return extension_types.get(ext, "application/octet-stream")
 
-
 class Cucumber:
-    """
-    Data scanner for extracting and scanning text from files.
-    """
     def __init__(self):
         self.patterns = {
             "PII": {
-                "PAN": r"[A-Z]{5}[0-9]{4}[A-Z]{1}",  # Indian PAN
-                "SSN": r"\d{3}-\d{2}-\d{4}",  # US SSN
                 "EMAIL": r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
                 "PHONE": r"\+?1?\d{9,15}",
-                "DOB": r"\b\d{2}/\d{2}/\d{4}\b",
-                "AADHAAR": r"\b\d{4} \d{4} \d{4}\b",
             },
             "PHI": {
                 "MEDICAL_RECORD": r"MR\d{8}",
                 "HEALTH_INSURANCE": r"HI\d{10}",
-                "BLOOD_TYPE": r"(A|B|AB|O)[+-]",
             },
             "PCI": {
                 "CREDIT_CARD": r"\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}",
                 "CVV": r"CVV:?\s*\d{3,4}",
-                "EXPIRY": r"^(0[1-9]|1[0-2])/([0-9]{2})$",
-            },
+            }
         }
 
     def _preprocess_image(self, image):
-        """Memory-efficient image preprocessing for OCR"""
         processed_image = image.convert('L')
         processed_image = processed_image.filter(ImageFilter.SHARPEN)
-        processed_image = processed_image.filter(ImageFilter.MedianFilter(size=3))
         enhancer = ImageEnhance.Contrast(processed_image)
         return enhancer.enhance(2.0)
 
     async def extract_text_from_image(self, image_bytes):
-        """Extract text from images with preprocessing"""
         try:
             with Image.open(io.BytesIO(image_bytes)) as img:
                 processed_img = self._preprocess_image(img)
-                return pytesseract.image_to_string(
-                    processed_img, 
-                    config='--psm 6 -c preserve_interword_spaces=1'
-                )
+                return pytesseract.image_to_string(processed_img)
         except Exception as e:
             print(f"OCR Error: {e}")
             return ""
 
     async def extract_text_from_pdf(self, pdf_bytes):
-        """Extract text from PDF with fallback to image-based OCR"""
         try:
-            with io.BytesIO(pdf_bytes) as pdf_file:
-                pdf = pdfplumber.open(pdf_file)
-                extracted_texts = []
-
-                for page in pdf.pages:
-                    page_text = page.extract_text() or ""
-
-                    if not page_text.strip():
-                        try:
-                            page_image = page.to_image(resolution=150)
-                            img_byte_arr = io.BytesIO()
-                            page_image.original.save(img_byte_arr, format="PNG")
-                            img_byte_arr = img_byte_arr.getvalue()
-
-                            page_text = await self.extract_text_from_image(img_byte_arr)
-                        except Exception as ocr_error:
-                            print(f"OCR Error: {ocr_error}")
-                            page_text = ""
-
-                    if page_text.strip():
-                        extracted_texts.append(page_text)
-
-                pdf.close()
-                return "\n".join(extracted_texts)
-
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                return "\n".join([
+                    page.extract_text() or 
+                    pytesseract.image_to_string(page.to_image(resolution=300).original) 
+                    for page in pdf.pages if page.extract_text() or 
+                    pytesseract.image_to_string(page.to_image(resolution=300).original)
+                ])
         except Exception as e:
             print(f"PDF Extraction Error: {e}")
             return ""
 
-    async def scan_lettuce(self, file_content: bytes, filename: str) -> Dict[str, List[str]]:
-        """Scan content for sensitive data patterns"""
+    async def scan_lettuce(self, file_content: bytes, filename: str) -> Dict:
         findings = {}
         file_type = detect_file_type(file_content, filename)
 
@@ -156,49 +108,36 @@ class Cucumber:
                 content_str = self._decode_text_content(file_content)
 
             for category, pattern_dict in self.patterns.items():
-                category_findings = []
-                for pattern_name, pattern in pattern_dict.items():
-                    matches = re.finditer(pattern, content_str)
-                    for match in matches:
-                        category_findings.append({
-                            "type": pattern_name,
-                            "value": match.group(),
-                            "position": match.span(),
-                        })
+                category_findings = [
+                    {"type": pattern_name, "value": match.group(), "position": match.span()}
+                    for pattern_name, pattern in pattern_dict.items()
+                    for match in re.finditer(pattern, content_str)
+                ]
                 if category_findings:
                     findings[category] = category_findings
 
         except Exception as e:
-            print(f"Scan Error: {str(e)}")
+            print(f"Scan Error: {traceback.format_exc()}")
             findings["error"] = [{"type": "scan_error", "value": str(e)}]
 
         return findings
 
     def _decode_text_content(self, content: bytes) -> str:
-        """Decode text content with multiple encodings"""
-        encodings = ["utf-8", "latin-1", "cp1252"]
-        for encoding in encodings:
+        for encoding in ["utf-8", "latin-1", "cp1252"]:
             try:
                 return content.decode(encoding)
             except UnicodeDecodeError:
                 continue
         return content.decode("cp1252", errors="ignore")
 
-
-class DatabasePool:
-    """Connection pool for SQLite database"""
-    def __init__(self, database_path: str, max_connections: int = 10):
-        self.database_path = database_path
-        self.max_connections = max_connections
-        self.connections = []
-        self.lock = threading.Lock()
+class Broccoli:
+    def __init__(self, db_path: str = "vegetable_garden.db"):
+        self.db_path = db_path
         self.init_db()
 
     def init_db(self):
-        """Initialize database schema"""
-        with self.get_connection() as conn:
-            c = conn.cursor()
-            c.execute("""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS scans (
                     id INTEGER PRIMARY KEY,
                     filename TEXT,
@@ -207,184 +146,66 @@ class DatabasePool:
                     file_type TEXT
                 )
             """)
-            conn.commit()
 
-    @contextmanager
-    def get_connection(self):
-        """Get a database connection from the pool"""
-        connection = None
-        try:
-            with self.lock:
-                if self.connections:
-                    connection = self.connections.pop()
-                else:
-                    connection = sqlite3.connect(
-                        self.database_path,
-                        timeout=30.0,
-                        isolation_level='IMMEDIATE'
-                    )
-                    connection.row_factory = sqlite3.Row
-
-            try:
-                yield connection
-            finally:
-                with self.lock:
-                    if len(self.connections) < self.max_connections:
-                        self.connections.append(connection)
-                    else:
-                        connection.close()
-        except sqlite3.Error as e:
-            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-
-
-def db_operation(f):
-    """Decorator for database operations with error handling"""
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        try:
-            return f(*args, **kwargs)
-        except sqlite3.Error as e:
-            raise HTTPException(status_code=500, detail=f"Database operation failed: {str(e)}")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Operation failed: {str(e)}")
-    return wrapper
-
-
-class Broccoli:
-    """Enhanced database operations with connection pooling"""
-    def __init__(self, db_path: str = "vegetable_garden.db"):
-        self.pool = DatabasePool(db_path)
-
-    @db_operation
     def store_spinach(self, filename: str, findings: Dict, file_type: str) -> int:
-        """Store scan results with error handling"""
-        with self.pool.get_connection() as conn:
-            c = conn.cursor()
-            c.execute(
-                """INSERT INTO scans (filename, scan_date, findings, file_type)
-                   VALUES (?, ?, ?, ?)""",
-                (filename, datetime.now().isoformat(), json.dumps(findings), file_type)
-            )
-            conn.commit()
-            return c.lastrowid
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO scans (filename, scan_date, findings, file_type) VALUES (?, ?, ?, ?)",
+                    (filename, datetime.now().isoformat(), json.dumps(findings), file_type)
+                )
+                return cursor.lastrowid
+        except sqlite3.Error as e:
+            print(f"Database error: {e}")
+            raise
 
-    @db_operation
-    def get_all_radish(self) -> List[Carrot]:
-        """Get all scan results with error handling"""
-        with self.pool.get_connection() as conn:
-            c = conn.cursor()
-            c.execute("SELECT * FROM scans")
-            rows = c.fetchall()
-            
-            results = []
-            for row in rows:
-                try:
-                    findings = json.loads(row[3]) if row[3] else {}
-                    results.append(
-                        Carrot(
-                            file_id=row[0],
-                            filename=row[1],
-                            scan_date=row[2],
-                            findings=findings
-                        )
-                    )
-                except json.JSONDecodeError:
-                    continue
-            return results
-
-    @db_operation
-    def delete_celery(self, scan_id: int):
-        """Delete scan result with error handling"""
-        with self.pool.get_connection() as conn:
-            c = conn.cursor()
-            c.execute("DELETE FROM scans WHERE id = ?", (scan_id,))
-            conn.commit()
-
-
-# FastAPI application setup
-app = FastAPI(
-    title="File Scanner API",
-    description="API for scanning files for sensitive data",
-    version="1.0.0"
-)
+app = FastAPI()
 templates = Jinja2Templates(directory="templates")
-
-# Global scanner and database instances
 cucumber = Cucumber()
 broccoli = Broccoli()
 
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database on startup"""
-    try:
-        broccoli.pool.init_db()
-    except Exception as e:
-        print(f"Startup error: {e}")
-        raise
-
-
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
-    """Serve the main page with error handling"""
-    try:
-        return templates.TemplateResponse("index.html", {"request": request})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+    return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/scan/")
 async def scan_file(file: UploadFile = File(...)):
-    """Handle file upload and scanning with enhanced error handling"""
     try:
-        content = await file.read()
-        if len(content) > 10 * 1024 * 1024:  # 10MB limit
-            raise HTTPException(status_code=413, detail="File too large")
-            
+        content = await file.read(10 * 1024 * 1024)  # 10MB limit
         file_type = detect_file_type(content, file.filename)
         findings = await cucumber.scan_lettuce(content, file.filename)
         scan_id = broccoli.store_spinach(file.filename, findings, file_type)
-        
+
         return {
             "scan_id": scan_id,
             "findings": findings,
             "file_type": file_type
         }
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+        return JSONResponse(status_code=500, content={
+            "error": f"Processing failed: {str(e)}",
+            "details": traceback.format_exc()
+        })
 
 @app.get("/scans/")
 async def get_scans():
-    """Retrieve all scan records with error handling"""
     try:
-        return broccoli.get_all_radish()
+        with sqlite3.connect(broccoli.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM scans")
+            rows = cursor.fetchall()
+
+        return [
+            Carrot(
+                file_id=row[0],
+                filename=row[1],
+                scan_date=row[2],
+                findings=json.loads(row[3]) if row[3] else {}
+            ) for row in rows
+        ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.delete("/scans/{scan_id}")
-async def delete_scan(scan_id: int):
-    """Delete a scan record with error handling"""
-    try:
-        broccoli.delete_celery(scan_id)
-        return {"message": "Scan deleted"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 if __name__ == "__main__":
-    # Get port from environment variable with fallback
-    port = int(os.environ.get("PORT", 8000))
-    
-    # Configure uvicorn with proper settings
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=port,
-        log_level="info",
-        access_log=True,
-        workers=1,
-    )
+    uvicorn.run(app, host="0.0.0.1", port=8000)
