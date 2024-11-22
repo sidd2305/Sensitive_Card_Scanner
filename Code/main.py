@@ -430,7 +430,7 @@ async def delete_scan(scan_id: int):
 if __name__ == "__main__":
     # Configure Tesseract path for Windows
     if os.name == "nt":
-        pytesseract.pytesseract.tesseract_cmd = r"C:/Program Files/Tesseract-OCR/tesseract.exe"
+        pytesseract.pytesseract.tesseract_cmd = r"/usr/bin/tesseract"
     
     # Get port from environment variable with fallback
     port = int(os.environ.get("PORT", 8000))
