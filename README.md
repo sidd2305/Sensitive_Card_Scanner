@@ -99,7 +99,11 @@ source venv/bin/activate
 ```
 
 Modify main.py with the tesseract path on your computer/PC(in main.py)
-
+```bash
+   pytesseract.pytesseract.tesseract_cmd = (
+            r"path to your tesseract exe"
+        )
+```
 On Linux
 ```bash
 python -m venv venv
