@@ -10,16 +10,16 @@ A sophisticated FastAPI-powered application designed to detect and analyze sensi
 - Interactive web interface
 - Comprehensive scan result management
 
+## 📃 Documentation
+Please refer to the documentation pdf for further details on how functional requirements are met and how the code has included the bonus criteria
+
+
 ## 🧩 System Architecture
 
 ### Core Components
 
 #### 1. `Cucumber` Class (Data Scanner)
 - **Functionality**: Primary scanning and text extraction mechanism
-- **Key Methods**:
-  - `extract_text_from_image()`: OCR-based text extraction from images
-  - `extract_text_from_pdf()`: Multi-strategy PDF text extraction
-  - `scan_lettuce()`: Core scanning method for detecting sensitive patterns
 - **Sensitive Pattern Categories**:
   - PII (Personally Identifiable Information)
   - PHI (Protected Health Information)
@@ -27,19 +27,9 @@ A sophisticated FastAPI-powered application designed to detect and analyze sensi
 
 #### 2. `Broccoli` Class (Database Management)
 - **Functionality**: SQLite database operations
-- **Key Methods**:
-  - `init_db()`: Database schema initialization
-  - `store_spinach()`: Save scan results
-  - `get_all_radish()`: Retrieve all scan records
-  - `delete_celery()`: Remove specific scan records
 
 #### 3. `Carrot` Model (Data Representation)
 - **Purpose**: Structured representation of scan results
-- **Attributes**:
-  - `file_id`: Unique scan identifier
-  - `filename`: Original file name
-  - `scan_date`: Timestamp of scan
-  - `findings`: Detected sensitive data patterns
 
 ### Web Application Components
 
