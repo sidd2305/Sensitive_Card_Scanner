@@ -1,9 +1,3 @@
-"""
-A FastAPI application for scanning files for sensitive data patterns including PII, PHI, and PCI.
-The application supports multiple file formats including PDF, images, and text files,
-with results stored in a SQLite database.
-"""
-
 import io
 import json
 import os
@@ -13,12 +7,10 @@ from datetime import datetime
 from typing import Dict, List, Union
 
 import pdfplumber
-import pytesseract
 import uvicorn
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from PIL import Image
 from pydantic import BaseModel, Field
 
 
@@ -55,10 +47,6 @@ def detect_file_type(content: bytes, filename: str) -> str:
     # Common file signatures (magic numbers)
     signatures = {
         b"%PDF": "application/pdf",
-        b"\xFF\xD8\xFF": "image/jpeg",
-        b"\x89PNG": "image/png",
-        b"GIF87a": "image/gif",
-        b"GIF89a": "image/gif",
     }
 
     # Check file signatures
@@ -72,10 +60,6 @@ def detect_file_type(content: bytes, filename: str) -> str:
         ".txt": "text/plain",
         ".csv": "text/csv",
         ".pdf": "application/pdf",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".gif": "image/gif",
         ".doc": "application/msword",
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     }
@@ -95,8 +79,8 @@ def detect_file_type(content: bytes, filename: str) -> str:
 
 class Cucumber:
     """
-    Data scanner implementation with enhanced file type support.
-    Handles extraction and scanning of text from various file formats
+    Data scanner implementation with PDF support.
+    Handles extraction and scanning of text from PDFs and text files
     for sensitive data patterns.
     """
 
@@ -122,29 +106,9 @@ class Cucumber:
             },
         }
 
-    async def extract_text_from_image(self, image_bytes):
-        """
-        Extract text from image using Tesseract OCR.
-
-        Args:
-            image_bytes (bytes): Raw image data
-
-        Returns:
-            str: Extracted text from the image
-
-        Raises:
-            OCRError: If text extraction fails
-        """
-        try:
-            image = Image.open(io.BytesIO(image_bytes))
-            return pytesseract.image_to_string(image)
-        except (Image.UnidentifiedImageError, pytesseract.TesseractError) as e:
-            print(f"OCR Error: {e}")
-            return ""
-
     async def extract_text_from_pdf(self, pdf_bytes):
         """
-        Extract text from PDF using multiple extraction methods.
+        Extract text from PDF using pdfplumber.
 
         Args:
             pdf_bytes (bytes): Raw PDF data
@@ -153,48 +117,14 @@ class Cucumber:
             str: Extracted text from all PDF pages
         """
         try:
-            # Temporary file to save PDF for processing
             with io.BytesIO(pdf_bytes) as pdf_file:
-                # Open the PDF
-                pdf = pdfplumber.open(pdf_file)
-
-                # List to store extracted text
-                extracted_texts = []
-
-                # Iterate through each page
-                for page in pdf.pages:
-                    # Try direct text extraction first
-                    page_text = page.extract_text() or ""
-
-                    # If no text extracted, use Tesseract OCR
-                    if not page_text.strip():
-                        try:
-                            # Convert page to image
-                            page_image = page.to_image(resolution=300)
-
-                            # Save image to bytes
-                            img_byte_arr = io.BytesIO()
-                            page_image.original.save(img_byte_arr, format="PNG")
-                            img_byte_arr = img_byte_arr.getvalue()
-
-                            # Use Tesseract to extract text from image
-                            page_text = pytesseract.image_to_string(
-                                Image.open(io.BytesIO(img_byte_arr))
-                            )
-                        except Exception as ocr_error:
-                            print(f"OCR Error: {ocr_error}")
-                            page_text = ""
-
-                    # Add non-empty page text
-                    if page_text.strip():
-                        extracted_texts.append(page_text)
-
-                # Close the PDF
-                pdf.close()
-
-                # Join extracted texts
-                return "\n".join(extracted_texts)
-
+                with pdfplumber.open(pdf_file) as pdf:
+                    extracted_texts = []
+                    for page in pdf.pages:
+                        text = page.extract_text() or ""
+                        if text.strip():
+                            extracted_texts.append(text)
+                    return "\n".join(extracted_texts)
         except Exception as e:
             print(f"PDF Extraction Error: {e}")
             return ""
@@ -216,9 +146,7 @@ class Cucumber:
         file_type = detect_file_type(file_content, filename)
 
         try:
-            if file_type.startswith("image/"):
-                content_str = await self.extract_text_from_image(file_content)
-            elif file_type == "application/pdf":
+            if file_type == "application/pdf":
                 content_str = await self.extract_text_from_pdf(file_content)
             else:
                 content_str = self._decode_text_content(file_content)
@@ -432,9 +360,4 @@ async def delete_scan(scan_id: int):
 
 
 if __name__ == "__main__":
-    if os.name == "nt":
-        pytesseract.pytesseract.tesseract_cmd = (
-            r"C:/Program Files/Tesseract-OCR/tesseract.exe"
-        )
-
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="0.0.0.1", port=8000)
