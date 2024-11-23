@@ -6,11 +6,13 @@ import sqlite3
 from datetime import datetime
 from typing import Dict, List, Union
 
-import pdfplumber
-import uvicorn
+import fitz  # PyMuPDF for PDF to image conversion
+import numpy as np
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from paddleocr import PaddleOCR
+from PIL import Image
 from pydantic import BaseModel, Field
 
 
@@ -47,6 +49,10 @@ def detect_file_type(content: bytes, filename: str) -> str:
     # Common file signatures (magic numbers)
     signatures = {
         b"%PDF": "application/pdf",
+        b"\xFF\xD8\xFF": "image/jpeg",
+        b"\x89PNG": "image/png",
+        b"GIF87a": "image/gif",
+        b"GIF89a": "image/gif",
     }
 
     # Check file signatures
@@ -60,6 +66,10 @@ def detect_file_type(content: bytes, filename: str) -> str:
         ".txt": "text/plain",
         ".csv": "text/csv",
         ".pdf": "application/pdf",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
         ".doc": "application/msword",
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     }
@@ -79,12 +89,15 @@ def detect_file_type(content: bytes, filename: str) -> str:
 
 class Cucumber:
     """
-    Data scanner implementation with PDF support.
-    Handles extraction and scanning of text from PDFs and text files
+    Data scanner implementation with enhanced OCR support using PaddleOCR.
+    Handles extraction and scanning of text from various file formats
     for sensitive data patterns.
     """
 
     def __init__(self):
+        # Initialize PaddleOCR with English and rotation detection
+        self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
+        
         self.patterns = {
             "PII": {
                 "PAN": r"[A-Z]{5}[0-9]{4}[A-Z]{1}",  # Indian PAN
@@ -106,9 +119,42 @@ class Cucumber:
             },
         }
 
+    async def extract_text_from_image(self, image_bytes):
+        """
+        Extract text from image using PaddleOCR.
+
+        Args:
+            image_bytes (bytes): Raw image data
+
+        Returns:
+            str: Extracted text from the image
+        """
+        try:
+            # Convert bytes to PIL Image
+            image = Image.open(io.BytesIO(image_bytes))
+            
+            # Convert PIL Image to numpy array
+            image_np = np.array(image)
+            
+            # Run OCR
+            result = self.ocr.ocr(image_np, cls=True)
+            
+            # Extract text from results
+            extracted_text = []
+            for line in result:
+                for word_info in line:
+                    if isinstance(word_info, tuple) and len(word_info) >= 2:
+                        text = word_info[1][0]  # Extract text from the OCR result
+                        extracted_text.append(text)
+            
+            return ' '.join(extracted_text)
+        except Exception as e:
+            print(f"OCR Error: {e}")
+            return ""
+
     async def extract_text_from_pdf(self, pdf_bytes):
         """
-        Extract text from PDF using pdfplumber.
+        Extract text from PDF using PyMuPDF and PaddleOCR.
 
         Args:
             pdf_bytes (bytes): Raw PDF data
@@ -117,14 +163,48 @@ class Cucumber:
             str: Extracted text from all PDF pages
         """
         try:
-            with io.BytesIO(pdf_bytes) as pdf_file:
-                with pdfplumber.open(pdf_file) as pdf:
-                    extracted_texts = []
-                    for page in pdf.pages:
-                        text = page.extract_text() or ""
-                        if text.strip():
-                            extracted_texts.append(text)
-                    return "\n".join(extracted_texts)
+            # Open PDF from memory
+            pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
+            extracted_texts = []
+
+            # Process each page
+            for page_num in range(len(pdf_document)):
+                page = pdf_document[page_num]
+                
+                # Try to extract text directly first
+                text = page.get_text()
+                
+                # If no text found, use OCR
+                if not text.strip():
+                    # Convert page to image
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better OCR
+                    img_bytes = pix.tobytes()
+                    
+                    # Convert raw bytes to PIL Image
+                    image = Image.frombytes("RGB", [pix.width, pix.height], img_bytes)
+                    
+                    # Convert PIL Image to numpy array
+                    image_np = np.array(image)
+                    
+                    # Run OCR
+                    result = self.ocr.ocr(image_np, cls=True)
+                    
+                    # Extract text from results
+                    page_texts = []
+                    for line in result:
+                        for word_info in line:
+                            if isinstance(word_info, tuple) and len(word_info) >= 2:
+                                text = word_info[1][0]  # Extract text from the OCR result
+                                page_texts.append(text)
+                    
+                    text = ' '.join(page_texts)
+                
+                if text.strip():
+                    extracted_texts.append(text)
+
+            pdf_document.close()
+            return "\n".join(extracted_texts)
+
         except Exception as e:
             print(f"PDF Extraction Error: {e}")
             return ""
@@ -146,7 +226,9 @@ class Cucumber:
         file_type = detect_file_type(file_content, filename)
 
         try:
-            if file_type == "application/pdf":
+            if file_type.startswith("image/"):
+                content_str = await self.extract_text_from_image(file_content)
+            elif file_type == "application/pdf":
                 content_str = await self.extract_text_from_pdf(file_content)
             else:
                 content_str = self._decode_text_content(file_content)
@@ -360,4 +442,5 @@ async def delete_scan(scan_id: int):
 
 
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
