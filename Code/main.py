@@ -1,3 +1,9 @@
+"""
+A FastAPI application for scanning files for sensitive data patterns including PII, PHI, and PCI.
+The application supports multiple file formats including PDF, images, and text files,
+with results stored in a SQLite database.
+"""
+
 import io
 import json
 import os
@@ -6,12 +12,12 @@ import sqlite3
 from datetime import datetime
 from typing import Dict, List, Union
 
-import fitz  # PyMuPDF for PDF to image conversion
-import numpy as np
+import pdfplumber
+import pytesseract
+import uvicorn
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from paddleocr import PaddleOCR
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -89,15 +95,12 @@ def detect_file_type(content: bytes, filename: str) -> str:
 
 class Cucumber:
     """
-    Data scanner implementation with enhanced OCR support using PaddleOCR.
+    Data scanner implementation with enhanced file type support.
     Handles extraction and scanning of text from various file formats
     for sensitive data patterns.
     """
 
     def __init__(self):
-        # Initialize PaddleOCR with English and rotation detection
-        self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
-        
         self.patterns = {
             "PII": {
                 "PAN": r"[A-Z]{5}[0-9]{4}[A-Z]{1}",  # Indian PAN
@@ -121,40 +124,27 @@ class Cucumber:
 
     async def extract_text_from_image(self, image_bytes):
         """
-        Extract text from image using PaddleOCR.
+        Extract text from image using Tesseract OCR.
 
         Args:
             image_bytes (bytes): Raw image data
 
         Returns:
             str: Extracted text from the image
+
+        Raises:
+            OCRError: If text extraction fails
         """
         try:
-            # Convert bytes to PIL Image
             image = Image.open(io.BytesIO(image_bytes))
-            
-            # Convert PIL Image to numpy array
-            image_np = np.array(image)
-            
-            # Run OCR
-            result = self.ocr.ocr(image_np, cls=True)
-            
-            # Extract text from results
-            extracted_text = []
-            for line in result:
-                for word_info in line:
-                    if isinstance(word_info, tuple) and len(word_info) >= 2:
-                        text = word_info[1][0]  # Extract text from the OCR result
-                        extracted_text.append(text)
-            
-            return ' '.join(extracted_text)
-        except Exception as e:
+            return pytesseract.image_to_string(image)
+        except (Image.UnidentifiedImageError, pytesseract.TesseractError) as e:
             print(f"OCR Error: {e}")
             return ""
 
     async def extract_text_from_pdf(self, pdf_bytes):
         """
-        Extract text from PDF using PyMuPDF and PaddleOCR.
+        Extract text from PDF using multiple extraction methods.
 
         Args:
             pdf_bytes (bytes): Raw PDF data
@@ -163,47 +153,47 @@ class Cucumber:
             str: Extracted text from all PDF pages
         """
         try:
-            # Open PDF from memory
-            pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
-            extracted_texts = []
+            # Temporary file to save PDF for processing
+            with io.BytesIO(pdf_bytes) as pdf_file:
+                # Open the PDF
+                pdf = pdfplumber.open(pdf_file)
 
-            # Process each page
-            for page_num in range(len(pdf_document)):
-                page = pdf_document[page_num]
-                
-                # Try to extract text directly first
-                text = page.get_text()
-                
-                # If no text found, use OCR
-                if not text.strip():
-                    # Convert page to image
-                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better OCR
-                    img_bytes = pix.tobytes()
-                    
-                    # Convert raw bytes to PIL Image
-                    image = Image.frombytes("RGB", [pix.width, pix.height], img_bytes)
-                    
-                    # Convert PIL Image to numpy array
-                    image_np = np.array(image)
-                    
-                    # Run OCR
-                    result = self.ocr.ocr(image_np, cls=True)
-                    
-                    # Extract text from results
-                    page_texts = []
-                    for line in result:
-                        for word_info in line:
-                            if isinstance(word_info, tuple) and len(word_info) >= 2:
-                                text = word_info[1][0]  # Extract text from the OCR result
-                                page_texts.append(text)
-                    
-                    text = ' '.join(page_texts)
-                
-                if text.strip():
-                    extracted_texts.append(text)
+                # List to store extracted text
+                extracted_texts = []
 
-            pdf_document.close()
-            return "\n".join(extracted_texts)
+                # Iterate through each page
+                for page in pdf.pages:
+                    # Try direct text extraction first
+                    page_text = page.extract_text() or ""
+
+                    # If no text extracted, use Tesseract OCR
+                    if not page_text.strip():
+                        try:
+                            # Convert page to image
+                            page_image = page.to_image(resolution=300)
+
+                            # Save image to bytes
+                            img_byte_arr = io.BytesIO()
+                            page_image.original.save(img_byte_arr, format="PNG")
+                            img_byte_arr = img_byte_arr.getvalue()
+
+                            # Use Tesseract to extract text from image
+                            page_text = pytesseract.image_to_string(
+                                Image.open(io.BytesIO(img_byte_arr))
+                            )
+                        except Exception as ocr_error:
+                            print(f"OCR Error: {ocr_error}")
+                            page_text = ""
+
+                    # Add non-empty page text
+                    if page_text.strip():
+                        extracted_texts.append(page_text)
+
+                # Close the PDF
+                pdf.close()
+
+                # Join extracted texts
+                return "\n".join(extracted_texts)
 
         except Exception as e:
             print(f"PDF Extraction Error: {e}")
@@ -442,5 +432,9 @@ async def delete_scan(scan_id: int):
 
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    if os.name == "nt":
+        pytesseract.pytesseract.tesseract_cmd = (
+            r"/usr/bin/tesseract.exe"
+        )
+
+    uvicorn.run(app, host="127.0.0.1", port=8000)
